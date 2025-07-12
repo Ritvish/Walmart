@@ -1,0 +1,325 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.schemas import UserCreate, UserResponse, UserLogin, Token
+from app.auth import authenticate_user, create_access_token, get_current_user
+from app.crud import create_user, get_user_by_email
+from datetime import timedelta
+import os
+
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+@router.post("/register", response_model=UserResponse)
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    # Check if user already exists
+    db_user = get_user_by_email(db, email=user.email)
+    if db_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user
+    db_user = create_user(db=db, user=user)
+    return db_user
+
+@router.post("/login", response_model=Token)
+def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
+    user = authenticate_user(db, user_credentials.email, user_credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@router.get("/me", response_model=UserResponse)
+def read_users_me(current_user = Depends(get_current_user)):
+    return current_user
+
+
+
+
+
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.schemas import CartResponse, CartItemCreate, CartItemResponse
+from app.crud import get_active_cart, create_cart, add_item_to_cart, get_cart_details
+from app.auth import get_current_user
+
+router = APIRouter(prefix="/cart", tags=["Cart"])
+
+@router.get("/", response_model=CartResponse)
+def get_user_cart(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get user's active cart"""
+    cart = get_active_cart(db, current_user.id)
+    if not cart:
+        cart = create_cart(db, current_user.id)
+    return cart
+
+@router.post("/items", response_model=CartItemResponse)
+def add_to_cart(
+    item: CartItemCreate,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Add item to cart"""
+    cart = get_active_cart(db, current_user.id)
+    if not cart:
+        cart = create_cart(db, current_user.id)
+    
+    cart_item = add_item_to_cart(db, cart.id, item)
+    if not cart_item:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return cart_item
+
+@router.get("/{cart_id}", response_model=CartResponse)
+def get_cart_by_id(
+    cart_id: str,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get cart details by ID"""
+    cart = get_cart_details(db, cart_id)
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    
+    # Ensure user owns the cart
+    if cart.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    return cart
+
+
+
+
+
+
+
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.schemas import (
+    ClubReadinessResponse, BuddyQueueCreate, BuddyQueueResponse,
+    ClubbedOrderDetailResponse, LocationUpdate
+)
+from app.crud import (
+    check_club_readiness, join_buddy_queue, find_compatible_buddies,
+    create_clubbed_order, assign_driver_to_order, timeout_expired_buddies
+)
+from app.auth import get_current_user
+
+router = APIRouter(prefix="/club", tags=["Club & Save"])
+
+@router.post("/check-readiness", response_model=ClubReadinessResponse)
+def check_readiness(
+    location: LocationUpdate,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Check if user can club orders in their location"""
+    return check_club_readiness(db, current_user.id, float(location.lat), float(location.lng))
+
+@router.post("/join-queue", response_model=BuddyQueueResponse)
+def join_queue(
+    buddy_data: BuddyQueueCreate,
+    background_tasks: BackgroundTasks,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Join the buddy queue for order clubbing"""
+    buddy_entry = join_buddy_queue(db, current_user.id, buddy_data)
+    
+    # Schedule background task to handle matching
+    background_tasks.add_task(process_buddy_matching, buddy_entry.id, db)
+    
+    return buddy_entry
+
+@router.get("/status/{buddy_queue_id}")
+def get_club_status(
+    buddy_queue_id: str,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get the status of user's club request"""
+    from app.models import BuddyQueue, ClubbedOrderUser
+    
+    buddy = db.query(BuddyQueue).filter(BuddyQueue.id == buddy_queue_id).first()
+    if not buddy:
+        raise HTTPException(status_code=404, detail="Buddy queue entry not found")
+    
+    if buddy.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if buddy.status.value == "matched":
+        # Find the clubbed order
+        clubbed_user = db.query(ClubbedOrderUser).filter(
+            ClubbedOrderUser.user_id == current_user.id,
+            ClubbedOrderUser.cart_id == buddy.cart_id
+        ).first()
+        
+        if clubbed_user:
+            return {
+                "status": "matched",
+                "clubbed_order_id": clubbed_user.clubbed_order_id,
+                "discount_given": clubbed_user.discount_given
+            }
+    
+    return {
+        "status": buddy.status.value,
+        "created_at": buddy.created_at
+    }
+
+def process_buddy_matching(buddy_queue_id: str, db: Session):
+    """Background task to process buddy matching"""
+    import time
+    import os
+    
+    CLUB_WAIT_TIME_MINUTES = int(os.getenv("CLUB_WAIT_TIME_MINUTES", "5"))
+    
+    # Wait for the club wait time
+    time.sleep(CLUB_WAIT_TIME_MINUTES * 60)
+    
+    # Timeout expired buddies first
+    timeout_expired_buddies(db)
+    
+    # Try to find compatible buddies
+    compatible_buddies = find_compatible_buddies(db, buddy_queue_id)
+    
+    if len(compatible_buddies) > 1:
+        # Create clubbed order
+        buddy_ids = [buddy.id for buddy in compatible_buddies]
+        clubbed_order = create_clubbed_order(db, buddy_ids)
+        
+        if clubbed_order:
+            # Assign driver
+            assign_driver_to_order(db, clubbed_order.id)
+
+
+
+
+
+
+
+
+
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.schemas import ClubbedOrderDetailResponse, DeliveryResponse
+from app.crud import get_user_orders
+from app.auth import get_current_user
+
+router = APIRouter(prefix="/orders", tags=["Orders"])
+
+@router.get("/", response_model=List[ClubbedOrderDetailResponse])
+def get_my_orders(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get user's order history"""
+    user_orders = get_user_orders(db, current_user.id)
+    return [order.clubbed_order for order in user_orders]
+
+@router.get("/{order_id}", response_model=ClubbedOrderDetailResponse)
+def get_order_details(
+    order_id: str,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get detailed information about a specific order"""
+    from app.models import ClubbedOrder, ClubbedOrderUser
+    
+    # Check if user is part of this order
+    user_order = db.query(ClubbedOrderUser).filter(
+        ClubbedOrderUser.clubbed_order_id == order_id,
+        ClubbedOrderUser.user_id == current_user.id
+    ).first()
+    
+    if not user_order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    order = db.query(ClubbedOrder).filter(ClubbedOrder.id == order_id).first()
+    return order
+
+@router.get("/{order_id}/delivery", response_model=DeliveryResponse)
+def get_delivery_status(
+    order_id: str,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get delivery status for an order"""
+    from app.models import Delivery, ClubbedOrderUser
+    
+    # Check if user is part of this order
+    user_order = db.query(ClubbedOrderUser).filter(
+        ClubbedOrderUser.clubbed_order_id == order_id,
+        ClubbedOrderUser.user_id == current_user.id
+    ).first()
+    
+    if not user_order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    delivery = db.query(Delivery).filter(Delivery.clubbed_order_id == order_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+    
+    return delivery
+
+
+
+
+
+
+
+
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.schemas import ProductCreate, ProductResponse
+from app.crud import create_product, get_products, get_product
+from app.auth import get_current_user
+
+router = APIRouter(prefix="/products", tags=["Products"])
+
+@router.post("/", response_model=ProductResponse)
+def create_new_product(
+    product: ProductCreate, 
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Create a new product (admin only in real implementation)"""
+    return create_product(db=db, product=product)
+
+@router.get("/", response_model=List[ProductResponse])
+def read_products(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """Get all products"""
+    products = get_products(db, skip=skip, limit=limit)
+    return products
+
+@router.get("/{product_id}", response_model=ProductResponse)
+def read_product(product_id: str, db: Session = Depends(get_db)):
+    """Get a specific product"""
+    db_product = get_product(db, product_id=product_id)
+    if db_product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return db_product
+
+
