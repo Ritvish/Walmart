@@ -84,7 +84,7 @@ class BuddyQueueResponse(BaseModel):
     timeout_minutes: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ClubbedCartItem(BaseModel):
     product_name: str
