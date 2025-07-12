@@ -144,6 +144,34 @@ export const clubService = {
       throw error.response?.data || error.message;
     }
   },
+
+  // Leave buddy queue
+  leaveQueue: async (buddyQueueId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await api.post(`/club/leave-queue/${buddyQueueId}`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      return res.data;
+    } catch (error) {
+      console.error('Error leaving queue:', error.response ? error.response.data : error.message);
+      throw error;
+    }
+  },
+
+  // Extend timeout for buddy queue
+  extendTimeout: async (buddyQueueId, additionalMinutes) => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await api.post(`/club/extend-timeout/${buddyQueueId}`, { additionalMinutes }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      return res.data;
+    } catch (error) {
+      console.error('Error extending timeout:', error.response ? error.response.data : error.message);
+      throw error;
+    }
+  },
 };
 
 export const joinClubQueue = async (cartId, lat, lng, timeout = 5) => {
@@ -173,6 +201,32 @@ export const checkClubStatus = async (buddyQueueId) => {
     return res.data;
   } catch (error) {
     console.error('Error checking club status:', error.response ? error.response.data : error.message);
+    throw error;
+  }
+};
+
+export const leaveQueue = async (buddyQueueId) => {
+  try {
+    const token = localStorage.getItem('token');
+    const res = await api.post(`/club/leave-queue/${buddyQueueId}`, {}, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    return res.data;
+  } catch (error) {
+    console.error('Error leaving queue:', error.response ? error.response.data : error.message);
+    throw error;
+  }
+};
+
+export const extendTimeout = async (buddyQueueId, additionalMinutes) => {
+  try {
+    const token = localStorage.getItem('token');
+    const res = await api.post(`/club/extend-timeout/${buddyQueueId}`, { additionalMinutes }, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    return res.data;
+  } catch (error) {
+    console.error('Error extending timeout:', error.response ? error.response.data : error.message);
     throw error;
   }
 };

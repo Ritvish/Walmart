@@ -314,18 +314,43 @@ def join_buddy_queue(db: Session, user_id: int, buddy_data: BuddyQueueCreate) ->
     location_hash = generate_location_hash(float(buddy_data.lat), float(buddy_data.lng))
 
     if existing_entry:
-        # Update existing entry
-        existing_entry.lat = buddy_data.lat
-        existing_entry.lng = buddy_data.lng
-        existing_entry.location_hash = location_hash
-        existing_entry.value_total = cart_value
-        existing_entry.weight_total = cart_weight
-        existing_entry.cart_id = active_cart.id # Update cart_id in case it changed
-        existing_entry.timeout_minutes = buddy_data.timeout_minutes  # Update timeout
-        existing_entry.created_at = datetime.utcnow() # Reset timer on refresh
-        db.commit()
-        db.refresh(existing_entry)
-        return existing_entry
+        # Check if the existing entry has timed out
+        timeout_threshold = existing_entry.created_at + timedelta(minutes=existing_entry.timeout_minutes)
+        if datetime.utcnow() > timeout_threshold:
+            # Entry has timed out, mark it as timed out
+            existing_entry.status = BuddyStatus.TIMED_OUT.value
+            db.commit()
+            
+            # Create a new entry since the old one timed out
+            new_buddy = BuddyQueue(
+                id=generate_uuid(),
+                user_id=user_id,
+                cart_id=active_cart.id,
+                value_total=cart_value,
+                weight_total=cart_weight,
+                lat=buddy_data.lat,
+                lng=buddy_data.lng,
+                location_hash=location_hash,
+                timeout_minutes=buddy_data.timeout_minutes,
+                status=BuddyStatus.WAITING.value
+            )
+            db.add(new_buddy)
+            db.commit()
+            db.refresh(new_buddy)
+            return new_buddy
+        else:
+            # Update existing entry without resetting the timer
+            existing_entry.lat = buddy_data.lat
+            existing_entry.lng = buddy_data.lng
+            existing_entry.location_hash = location_hash
+            existing_entry.value_total = cart_value
+            existing_entry.weight_total = cart_weight
+            existing_entry.cart_id = active_cart.id # Update cart_id in case it changed
+            existing_entry.timeout_minutes = buddy_data.timeout_minutes  # Update timeout
+            # DO NOT reset created_at - keep the original timestamp
+            db.commit()
+            db.refresh(existing_entry)
+            return existing_entry
     else:
         # Create new entry
         new_buddy = BuddyQueue(
@@ -536,7 +561,7 @@ def get_user_orders(db: Session, user_id: str):
 
 # Timeout management
 def timeout_expired_buddies(db: Session):
-    """Remove expired buddy queue entries based on their individual timeout."""
+    """Mark expired buddy queue entries as TIMED_OUT based on their individual timeout."""
     current_time = datetime.utcnow()
     
     # Find all waiting entries and check each one's individual timeout
@@ -549,17 +574,30 @@ def timeout_expired_buddies(db: Session):
         # Calculate timeout for this specific entry
         timeout_threshold = entry.created_at + timedelta(minutes=entry.timeout_minutes)
         if current_time > timeout_threshold:
+            entry.status = BuddyStatus.TIMED_OUT.value
             expired_entries.append(entry.id)
     
-    # Delete expired entries
+    # Commit the status changes
     if expired_entries:
-        num_deleted = db.query(BuddyQueue).filter(
-            BuddyQueue.id.in_(expired_entries)
-        ).delete(synchronize_session=False)
         db.commit()
-        return num_deleted
+        return len(expired_entries)
     
     return 0
+
+def cleanup_old_buddy_entries(db: Session, hours_old: int = 24):
+    """Delete buddy queue entries that are older than specified hours and not WAITING"""
+    cutoff_time = datetime.utcnow() - timedelta(hours=hours_old)
+    
+    # Delete old entries that are not in WAITING status
+    num_deleted = db.query(BuddyQueue).filter(
+        and_(
+            BuddyQueue.created_at < cutoff_time,
+            BuddyQueue.status != BuddyStatus.WAITING.value
+        )
+    ).delete(synchronize_session=False)
+    
+    db.commit()
+    return num_deleted
 
 def clear_cart(db: Session, cart_id: str):
     """Clear all items from a cart and restore stock"""

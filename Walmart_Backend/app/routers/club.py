@@ -54,6 +54,14 @@ def get_club_status(
     if buddy.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Check if entry has timed out and update status if needed
+    if buddy.status == BuddyStatus.WAITING.value:
+        from datetime import datetime, timedelta
+        timeout_threshold = buddy.created_at + timedelta(minutes=buddy.timeout_minutes)
+        if datetime.utcnow() > timeout_threshold:
+            buddy.status = BuddyStatus.TIMED_OUT.value
+            db.commit()
+    
     if buddy.status == BuddyStatus.MATCHED.value:
         # Find the clubbed order
         clubbed_user = db.query(ClubbedOrderUser).filter(
@@ -92,6 +100,13 @@ def get_detailed_club_status(
     
     if buddy.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check if entry has timed out and update status if needed
+    if buddy.status == BuddyStatus.WAITING.value:
+        timeout_threshold = buddy.created_at + timedelta(minutes=buddy.timeout_minutes)
+        if datetime.utcnow() > timeout_threshold:
+            buddy.status = BuddyStatus.TIMED_OUT.value
+            db.commit()
     
     # Base response
     response = {
@@ -277,4 +292,52 @@ def get_queue_statistics(
         "avg_wait_time": avg_wait_time,
         "success_rate": round(success_rate, 1),
         "peak_hours": peak_hours[:2]  # Limit to top 2 peak times
+    }
+
+@router.post("/leave-queue/{buddy_queue_id}")
+def leave_queue(
+    buddy_queue_id: str,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Leave the buddy queue"""
+    buddy = db.query(BuddyQueue).filter(BuddyQueue.id == buddy_queue_id).first()
+    if not buddy:
+        raise HTTPException(status_code=404, detail="Buddy queue entry not found")
+    
+    if buddy.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Remove from queue
+    db.delete(buddy)
+    db.commit()
+    
+    return {"success": True, "message": "Left buddy queue successfully"}
+
+@router.post("/extend-timeout/{buddy_queue_id}")
+def extend_timeout(
+    buddy_queue_id: str,
+    additional_minutes: int,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Extend the timeout for a buddy queue entry"""
+    buddy = db.query(BuddyQueue).filter(BuddyQueue.id == buddy_queue_id).first()
+    if not buddy:
+        raise HTTPException(status_code=404, detail="Buddy queue entry not found")
+    
+    if buddy.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if buddy.status != BuddyStatus.WAITING.value:
+        raise HTTPException(status_code=400, detail="Cannot extend timeout for non-waiting entry")
+    
+    # Extend the timeout
+    buddy.timeout_minutes += additional_minutes
+    db.commit()
+    
+    return {
+        "success": True, 
+        "message": f"Timeout extended by {additional_minutes} minutes",
+        "new_timeout_minutes": buddy.timeout_minutes
     }

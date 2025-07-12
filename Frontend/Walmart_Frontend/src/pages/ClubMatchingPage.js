@@ -429,21 +429,6 @@ const ClubMatchingPage = () => {
             >
               Back to Cart
             </button>
-            {/* Temporary button to simulate match for testing */}
-            {nearbyUsers > 0 && (
-              <button 
-                onClick={() => {
-                  setStatus('MATCHED');
-                  toast.success('Match found! Redirecting to your clubbed cart...');
-                  setTimeout(() => {
-                    window.location.href = `/clubbed-cart/test-clubbed-order-id`;
-                  }, 2000);
-                }}
-                className="btn btn-success"
-              >
-                (Test) Force Match
-              </button>
-            )}
           </div>
         </div>
       </div>
@@ -472,6 +457,27 @@ const ClubMatchingPage = () => {
   }
 
   if (status === 'TIMED_OUT') {
+    const handleExtendTimeout = async () => {
+      try {
+        const queueId = buddyQueue?.buddyQueueId || buddyQueue?.id;
+        if (queueId) {
+          await clubService.extendTimeout(queueId, 5); // Extend by 5 minutes
+          setTimerDuration(timerDuration + 300); // Add 5 minutes (300 seconds)
+          setTimeLeft(300); // Reset timer to 5 minutes
+          setStatus('WAITING');
+          
+          // Update localStorage with new timer
+          localStorage.setItem('buddyQueueTimerStart', Date.now().toString());
+          localStorage.setItem('buddyQueueTimerDuration', (timerDuration + 300).toString());
+          
+          toast.success('Timeout extended by 5 minutes!');
+        }
+      } catch (error) {
+        console.error('Failed to extend timeout:', error);
+        toast.error('Failed to extend timeout. Please try again.');
+      }
+    };
+
     return (
       <div className="container" style={{ padding: '20px' }}>
         <div className="card text-center">
@@ -481,10 +487,16 @@ const ClubMatchingPage = () => {
           
           <div className="alert alert-info">
             <h4>What now?</h4>
-            <p>Don't worry! You can still proceed with regular checkout or try clubbing again later.</p>
+            <p>Don't worry! You can extend the wait time, try again, or proceed with regular checkout.</p>
           </div>
           
-          <div className="d-flex justify-content-center gap-3">
+          <div className="d-flex justify-content-center gap-2">
+            <button 
+              onClick={handleExtendTimeout}
+              className="btn btn-warning"
+            >
+              Wait 5 More Minutes
+            </button>
             <button 
               onClick={() => window.location.href = '/cart'}
               className="btn btn-secondary"
