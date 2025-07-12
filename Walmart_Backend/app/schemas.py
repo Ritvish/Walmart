@@ -59,6 +59,18 @@ class CartItemResponse(CartItemBase):
     class Config:
         from_attributes = True
 
+class CartItemUpdateQuantity(BaseModel):
+    quantity: int
+
+class CartItemRemove(BaseModel):
+    success: bool
+    message: str
+
+class CartClearResponse(BaseModel):
+    success: bool
+    message: str
+    items_removed: int
+
 class CartResponse(BaseModel):
     id: str
     user_id: str

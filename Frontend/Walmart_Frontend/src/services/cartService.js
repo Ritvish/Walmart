@@ -49,4 +49,44 @@ export const cartService = {
       return total + (weight * quantity);
     }, 0);
   },
+
+  // Remove item from cart
+  removeFromCart: async (itemId) => {
+    try {
+      const response = await api.delete(`/cart/items/${itemId}`);
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error.message;
+    }
+  },
+
+  // Update item quantity in cart
+  updateCartItemQuantity: async (itemId, quantity) => {
+    try {
+      const response = await api.put(`/cart/items/${itemId}/quantity`, { quantity });
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error.message;
+    }
+  },
+
+  // Clear all items from cart
+  clearCart: async () => {
+    try {
+      const response = await api.delete('/cart/clear');
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error.message;
+    }
+  },
+
+  // Delete the entire cart
+  deleteCart: async () => {
+    try {
+      const response = await api.delete('/cart/');
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error.message;
+    }
+  },
 };

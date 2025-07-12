@@ -130,6 +130,61 @@ def add_item_to_cart(db: Session, cart_id: str, item: CartItemCreate):
         db.refresh(db_item)
         db.refresh(product)
         return db_item
+def remove_item_from_cart(db: Session, cart_id: str, item_id: str):
+    """Remove an item from the cart"""
+    cart_item = db.query(CartItem).filter(
+        and_(CartItem.id == item_id, CartItem.cart_id == cart_id)
+    ).first()
+    
+    if not cart_item:
+        return None
+    
+    # Restore stock
+    product = get_product(db, cart_item.product_id)
+    if product:
+        product.stock += cart_item.quantity
+        db.refresh(product)
+    
+    # Remove the item
+    db.delete(cart_item)
+    db.commit()
+    return True
+
+def update_cart_item_quantity(db: Session, cart_id: str, item_id: str, new_quantity: int):
+    """Update quantity of an item in the cart"""
+    if new_quantity <= 0:
+        return remove_item_from_cart(db, cart_id, item_id)
+    
+    cart_item = db.query(CartItem).filter(
+        and_(CartItem.id == item_id, CartItem.cart_id == cart_id)
+    ).first()
+    
+    if not cart_item:
+        return None
+    
+    product = get_product(db, cart_item.product_id)
+    if not product:
+        return None
+    
+    # Calculate quantity difference
+    quantity_diff = new_quantity - cart_item.quantity
+    
+    # Check if we have enough stock for increase
+    if quantity_diff > 0 and product.stock < quantity_diff:
+        raise Exception("Not enough stock available")
+    
+    # Update stock
+    product.stock -= quantity_diff
+    
+    # Update cart item
+    cart_item.quantity = new_quantity
+    cart_item.total_price = new_quantity * product.price
+    
+    db.commit()
+    db.refresh(cart_item)
+    db.refresh(product)
+    
+    return cart_item
 
 def get_cart_details(db: Session, cart_id: str):
     return db.query(Cart).filter(Cart.id == cart_id).first()
@@ -505,3 +560,33 @@ def timeout_expired_buddies(db: Session):
         return num_deleted
     
     return 0
+
+def clear_cart(db: Session, cart_id: str):
+    """Clear all items from a cart and restore stock"""
+    cart_items = db.query(CartItem).filter(CartItem.cart_id == cart_id).all()
+    
+    # Restore stock for all items
+    for cart_item in cart_items:
+        product = get_product(db, cart_item.product_id)
+        if product:
+            product.stock += cart_item.quantity
+            db.refresh(product)
+    
+    # Delete all cart items
+    db.query(CartItem).filter(CartItem.cart_id == cart_id).delete()
+    db.commit()
+    
+    return len(cart_items)  # Return number of items removed
+
+def delete_cart(db: Session, cart_id: str):
+    """Delete the entire cart and all its items"""
+    # First clear all items (this restores stock)
+    clear_cart(db, cart_id)
+    
+    # Then delete the cart itself
+    cart = db.query(Cart).filter(Cart.id == cart_id).first()
+    if cart:
+        db.delete(cart)
+        db.commit()
+        return True
+    return False
