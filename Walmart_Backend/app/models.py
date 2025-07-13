@@ -88,10 +88,17 @@ class ClubbedOrder(Base):
     combined_weight = Column(DECIMAL(10, 2))
     total_discount = Column(DECIMAL(10, 2))
     status = Column(Enum(OrderStatus, validate_strings=True, native_enum=False), default=OrderStatus.CREATED)
+    
+    # Payment and commitment tracking
+    all_payments_confirmed = Column(Boolean, default=False)
+    payment_confirmation_deadline = Column(TIMESTAMP)
+    order_confirmed_at = Column(TIMESTAMP)
+    
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
     
     # Relationships
     clubbed_order_users = relationship("ClubbedOrderUser", back_populates="clubbed_order")
+    user_orders = relationship("UserOrder", back_populates="clubbed_order")
 
 class ClubbedOrderUser(Base):
     __tablename__ = "clubbed_order_users"
@@ -136,3 +143,93 @@ class Delivery(Base):
     # Relationships
     clubbed_order = relationship("ClubbedOrder")
     driver = relationship("Driver", back_populates="deliveries")
+
+# New models for split payment and commitment system
+
+class UserOrder(Base):
+    """Individual user's portion of a clubbed order"""
+    __tablename__ = "user_orders"
+    
+    id = Column(String(36), primary_key=True)
+    clubbed_order_id = Column(String(36), ForeignKey("clubbed_orders.id", ondelete="CASCADE"))
+    user_id = Column(String(36), ForeignKey("users.id"))
+    cart_id = Column(String(36), ForeignKey("carts.id"))
+    
+    # Payment details
+    individual_total = Column(DECIMAL(10, 2), nullable=False)  # User's portion
+    payment_method = Column(Enum('ONLINE', 'COD', name='payment_method_enum'), nullable=False)
+    payment_status = Column(Enum('PENDING', 'CONFIRMED', 'FAILED', 'CANCELLED', name='payment_status_enum'), default='PENDING')
+    payment_confirmed_at = Column(TIMESTAMP)
+    
+    # Commitment tracking
+    commitment_deadline = Column(TIMESTAMP, nullable=False)  # When user must confirm payment
+    is_committed = Column(Boolean, default=False)
+    committed_at = Column(TIMESTAMP)
+    
+    # Delivery details for this user
+    delivery_address = Column(Text, nullable=False)
+    delivery_phone = Column(String(20), nullable=False)
+    special_instructions = Column(Text)
+    
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    # Relationships
+    clubbed_order = relationship("ClubbedOrder", back_populates="user_orders")
+    user = relationship("User")
+    cart = relationship("Cart")
+    cancellation = relationship("OrderCancellation", back_populates="user_order", uselist=False)
+
+class OrderCancellation(Base):
+    """Tracks order cancellations and penalties"""
+    __tablename__ = "order_cancellations"
+    
+    id = Column(String(36), primary_key=True)
+    user_order_id = Column(String(36), ForeignKey("user_orders.id", ondelete="CASCADE"))
+    clubbed_order_id = Column(String(36), ForeignKey("clubbed_orders.id"))
+    cancelled_by_user_id = Column(String(36), ForeignKey("users.id"))
+    
+    # Cancellation details
+    cancellation_reason = Column(Enum('PAYMENT_FAILED', 'USER_WITHDREW', 'TIMEOUT', 'SYSTEM_ERROR', name='cancellation_reason_enum'))
+    cancelled_at = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    # Financial impact
+    cancellation_fee = Column(DECIMAL(10, 2), default=0.0)  # Fee charged to cancelling user
+    compensation_amount = Column(DECIMAL(10, 2), default=0.0)  # Amount given to other users
+    company_penalty_share = Column(DECIMAL(10, 2), default=0.0)  # Company's share of penalty
+    
+    # Processing status
+    penalty_processed = Column(Boolean, default=False)
+    compensation_processed = Column(Boolean, default=False)
+    
+    # Relationships
+    user_order = relationship("UserOrder", back_populates="cancellation")
+    clubbed_order = relationship("ClubbedOrder")
+    cancelled_by_user = relationship("User")
+
+class PaymentTransaction(Base):
+    """Tracks all payment transactions"""
+    __tablename__ = "payment_transactions"
+    
+    id = Column(String(36), primary_key=True)
+    user_order_id = Column(String(36), ForeignKey("user_orders.id"))
+    user_id = Column(String(36), ForeignKey("users.id"))
+    
+    # Transaction details
+    transaction_type = Column(Enum('PAYMENT', 'REFUND', 'PENALTY', 'COMPENSATION', name='transaction_type_enum'))
+    amount = Column(DECIMAL(10, 2), nullable=False)
+    payment_method = Column(Enum('ONLINE', 'COD', 'WALLET', name='payment_method_enum'))
+    
+    # External payment details (for online payments)
+    external_transaction_id = Column(String(100))  # Payment gateway transaction ID
+    payment_gateway = Column(String(50))  # 'razorpay', 'stripe', etc.
+    
+    # Status tracking
+    status = Column(Enum('PENDING', 'SUCCESS', 'FAILED', 'CANCELLED', name='transaction_status_enum'), default='PENDING')
+    processed_at = Column(TIMESTAMP)
+    failure_reason = Column(Text)
+    
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    # Relationships
+    user_order = relationship("UserOrder")
+    user = relationship("User")

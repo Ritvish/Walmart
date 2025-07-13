@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { clubService } from '../services/clubService';
 import { productService } from '../services/productService';
+import splitPaymentService from '../services/splitPaymentService';
 import PrivacyNotice from '../components/PrivacyNotice';
 import toast from 'react-hot-toast';
 
@@ -29,32 +30,27 @@ const ClubbedCartPage = () => {
       try {
         console.log('🔍 Fetching clubbed cart for ID:', clubbedOrderId);
         
-        // Add test data for development - remove when backend is ready
-        if (clubbedOrderId === 'test-clubbed-order-id') {
-          console.log('🧪 Using test data for clubbed cart');
-          const testData = {
-            clubbed_order_id: 'test-clubbed-order-id',
-            status: 'ACTIVE',
-            total_amount: 1700.00,
-            users: [
-              { user_id: 'You', cart_total: 455.00, item_count: 3, is_current_user: true },
-              { user_id: 'User 2', cart_total: 1245.00, item_count: 3, is_current_user: false }
-            ],
-            items: [
-              { product_name: 'Organic Bananas', quantity: 2, price: 120.00, added_by_user: 'You' },
-              { product_name: 'Almond Milk', quantity: 1, price: 250.00, added_by_user: 'You' },
-              { product_name: 'Whole Wheat Bread', quantity: 1, price: 85.00, added_by_user: 'You' }
-            ],
-            other_users_total: 1245.00
-          };
-          setClubbedCart(testData);
-          setLoading(false);
-          return;
-        }
-        
         const data = await clubService.getClubbedCart(clubbedOrderId);
         console.log('✅ Clubbed cart data received:', data);
         setClubbedCart(data);
+        
+        // Initialize split payment process if this is a newly created clubbed order
+        if (data && data.status === 'CREATED') {
+          console.log('🔄 Initializing split payment for clubbed order:', clubbedOrderId);
+          try {
+            const splitPaymentResult = await splitPaymentService.createUserOrders(clubbedOrderId);
+            console.log('✅ Split payment initialized:', splitPaymentResult);
+            toast.success('Payment process initialized! You have 10 minutes to commit.');
+            
+            // Redirect to split payment page
+            setTimeout(() => {
+              navigate(`/split-payment/${clubbedOrderId}`);
+            }, 2000);
+          } catch (splitError) {
+            console.error('❌ Failed to initialize split payment:', splitError);
+            toast.error('Failed to initialize payment process. Please try again.');
+          }
+        }
       } catch (error) {
         console.error('❌ Failed to fetch clubbed cart:', error);
         console.error('❌ Error details:', {
@@ -298,9 +294,9 @@ const ClubbedCartPage = () => {
       <div className="text-center">
         <button 
           className="btn btn-primary btn-lg"
-          onClick={() => navigate(`/checkout?clubbedOrderId=${clubbedOrderId}`)}
+          onClick={() => navigate(`/split-payment/${clubbedOrderId}`)}
         >
-          Proceed to Checkout - ₹{numericTotalAmount.toFixed(2)}
+          Proceed to Split Payment - ₹{numericTotalAmount.toFixed(2)}
         </button>
       </div>
     </div>

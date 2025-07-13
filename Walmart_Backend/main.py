@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import create_tables, SessionLocal
-from app.routers import auth, products, cart, club, orders, clubbed_cart
+from app.routers import auth, products, cart, club, orders, clubbed_cart, split_payment
 from app.crud import timeout_expired_buddies, cleanup_old_buddy_entries
 import os
 import uvicorn
@@ -33,6 +33,7 @@ app.include_router(cart.router)
 app.include_router(club.router)
 app.include_router(orders.router)
 app.include_router(clubbed_cart.router)
+app.include_router(split_payment.router)
 
 @app.on_event("startup")
 def startup_event():

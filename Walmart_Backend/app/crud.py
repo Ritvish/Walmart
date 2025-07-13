@@ -1,5 +1,6 @@
 import uuid
 import hashlib
+import logging
 from typing import List, Optional
 from decimal import Decimal
 from datetime import datetime, timedelta
@@ -8,7 +9,7 @@ from sqlalchemy import and_, func, text
 from geopy.distance import geodesic
 from app.models import (
     User, Product, Cart, CartItem, BuddyQueue, ClubbedOrder, ClubbedOrderUser,
-    Driver, Delivery
+    Driver, Delivery, UserOrder, PaymentTransaction, OrderCancellation
 )
 from app.enums import BuddyStatus, OrderStatus, DriverStatus
 from app.schemas import (
@@ -18,6 +19,8 @@ from app.schemas import (
 from app.auth import get_password_hash, verify_password
 import os
 from math import radians, sin, cos, sqrt, atan2
+
+logger = logging.getLogger(__name__)
 
 CLUB_WAIT_TIME_MINUTES = int(os.getenv("CLUB_WAIT_TIME_MINUTES", "5"))
 MAX_DELIVERY_WEIGHT_KG = float(os.getenv("MAX_DELIVERY_WEIGHT_KG", "5.0"))
@@ -249,13 +252,16 @@ def find_compatible_buddies(db: Session, buddy_id: str) -> List[BuddyQueue]:
     """
     Find compatible buddies for a user based on location and timeout.
     """
+    print(f"DEBUG: Finding compatible buddies for {buddy_id}")
     current_buddy = db.query(BuddyQueue).filter(BuddyQueue.id == buddy_id).first()
     if not current_buddy or current_buddy.status != BuddyStatus.WAITING.value:
+        print(f"DEBUG: Current buddy not found or not waiting. Status: {current_buddy.status if current_buddy else 'None'}")
         return []
 
     # Timeout for the current user
     timeout_threshold = current_buddy.created_at + timedelta(minutes=current_buddy.timeout_minutes)
     if datetime.utcnow() > timeout_threshold:
+        print(f"DEBUG: Current buddy {buddy_id} has timed out")
         current_buddy.status = BuddyStatus.TIMED_OUT.value
         db.commit()
         return []
@@ -266,6 +272,8 @@ def find_compatible_buddies(db: Session, buddy_id: str) -> List[BuddyQueue]:
         BuddyQueue.id != current_buddy.id
     ).all()
     
+    print(f"DEBUG: Found {len(potential_buddies)} potential buddies")
+    
     # Filter out expired buddies in Python
     current_time = datetime.utcnow()
     valid_buddies = []
@@ -273,7 +281,10 @@ def find_compatible_buddies(db: Session, buddy_id: str) -> List[BuddyQueue]:
         timeout_threshold = buddy.created_at + timedelta(minutes=buddy.timeout_minutes)
         if current_time <= timeout_threshold:
             valid_buddies.append(buddy)
+        else:
+            print(f"DEBUG: Buddy {buddy.id} has timed out")
     
+    print(f"DEBUG: {len(valid_buddies)} valid (non-expired) buddies found")
     potential_buddies = valid_buddies
 
     compatible_group = [current_buddy]
@@ -283,15 +294,19 @@ def find_compatible_buddies(db: Session, buddy_id: str) -> List[BuddyQueue]:
 
     for potential_buddy in potential_buddies:
         distance = haversine(current_buddy.lat, current_buddy.lng, potential_buddy.lat, potential_buddy.lng)
-        if distance <= 300:  # 300 meters radius
+        print(f"DEBUG: Distance between buddy {current_buddy.id} and {potential_buddy.id}: {distance} meters")
+        if distance <= 5000:  # Temporarily increased to 5km for easier testing
             compatible_group.append(potential_buddy)
+            print(f"DEBUG: Added buddy {potential_buddy.id} to compatible group")
             if len(compatible_group) >= MAX_GROUP_SIZE:
                 break
     
     # We need at least one other person to form a club
     if len(compatible_group) > 1:
+        print(f"DEBUG: Returning {len(compatible_group)} compatible buddies for matching")
         return compatible_group
     
+    print(f"DEBUG: Not enough buddies for club (only {len(compatible_group)})")
     return []
 
 def join_buddy_queue(db: Session, user_id: int, buddy_data: BuddyQueueCreate) -> BuddyQueue:
@@ -395,8 +410,10 @@ def create_clubbed_order(db: Session, buddies: List[BuddyQueue]) -> ClubbedOrder
             # This should ideally not happen
             continue
 
-        cart_total = sum(item.product.price * item.quantity for item in cart.cart_items)
-        cart_weight = sum(item.quantity * item.product.weight_grams for item in cart.cart_items) / 1000  # Convert to kg
+        # Explicitly load cart items with product relationships to ensure accurate calculation
+        cart_items = db.query(CartItem).filter(CartItem.cart_id == cart.id).all()
+        cart_total = sum(item.product.price * item.quantity for item in cart_items)
+        cart_weight = sum(item.quantity * item.product.weight_grams for item in cart_items) / 1000  # Convert to kg
         
         total_amount += cart_total
         total_weight += cart_weight
@@ -421,6 +438,19 @@ def create_clubbed_order(db: Session, buddies: List[BuddyQueue]) -> ClubbedOrder
     new_clubbed_order.total_discount = total_amount * Decimal('0.05')  # 5% discount
     db.commit()
     db.refresh(new_clubbed_order)
+    
+    # Automatically initialize split payment process
+    try:
+        print(f"DEBUG: Auto-initializing split payment for clubbed order {new_clubbed_order.id}")
+        user_orders = create_user_orders_for_clubbed_order(db, new_clubbed_order.id)
+        if user_orders:
+            print(f"DEBUG: Created {len(user_orders)} user orders with payment deadline")
+        else:
+            print(f"DEBUG: Failed to create user orders")
+    except Exception as e:
+        print(f"DEBUG: Error auto-initializing split payment: {str(e)}")
+        # Don't fail the entire clubbed order creation if split payment fails
+        pass
     
     return new_clubbed_order
 
@@ -472,9 +502,9 @@ def get_clubbed_order_details(db: Session, clubbed_order_id: str, requesting_use
     other_users_total = 0.0
     
     for i, cua in enumerate(club_users_assoc):
-        # Get cart total for this user
+        # Get cart total for this user - using same calculation method as create_clubbed_order
         cart_items = db.query(CartItem).filter(CartItem.cart_id == cua.cart_id).all()
-        cart_total = sum(float(item.product.price) * item.quantity for item in cart_items)
+        cart_total = float(sum(item.product.price * item.quantity for item in cart_items))
         item_count = len(cart_items)
         
         is_current_user = cua.user_id == requesting_user_id
@@ -651,3 +681,395 @@ def delete_cart(db: Session, cart_id: str):
         db.commit()
         return True
     return False
+
+# Split Payment and Commitment System CRUD Functions
+
+def create_user_orders_for_clubbed_order(db: Session, clubbed_order_id: str) -> List[UserOrder]:
+    """
+    Create individual user orders for each user in a clubbed order
+    """
+    
+    try:
+        # Get clubbed order
+        clubbed_order = db.query(ClubbedOrder).filter(ClubbedOrder.id == clubbed_order_id).first()
+        if not clubbed_order:
+            return []
+        
+        # Get all users in this clubbed order
+        clubbed_users = db.query(ClubbedOrderUser).filter(
+            ClubbedOrderUser.clubbed_order_id == clubbed_order_id
+        ).all()
+        
+        user_orders = []
+        commitment_deadline = datetime.utcnow() + timedelta(minutes=10)  # 10 minutes to commit
+        print(f"DEBUG: Setting commitment deadline to: {commitment_deadline}")
+        print(f"DEBUG: Current time: {datetime.utcnow()}")
+        
+        for clubbed_user in clubbed_users:
+            # Calculate individual total for this user
+            cart_items = db.query(CartItem).filter(CartItem.cart_id == clubbed_user.cart_id).all()
+            individual_total = sum(float(item.product.price) * item.quantity for item in cart_items)
+            
+            # Create user order
+            user_order = UserOrder(
+                id=generate_uuid(),
+                clubbed_order_id=clubbed_order_id,
+                user_id=clubbed_user.user_id,
+                cart_id=clubbed_user.cart_id,
+                individual_total=individual_total,
+                payment_method='ONLINE',  # Default, user can change
+                commitment_deadline=commitment_deadline,
+                delivery_address="",  # User must provide
+                delivery_phone=""  # User must provide
+            )
+            
+            db.add(user_order)
+            user_orders.append(user_order)
+        
+        # Update clubbed order status and deadline
+        clubbed_order.status = OrderStatus.PAYMENT_PENDING
+        clubbed_order.payment_confirmation_deadline = commitment_deadline
+        
+        db.commit()
+        return user_orders
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create user orders: {str(e)}")
+        return []
+
+def commit_to_payment(db: Session, user_order_id: str, payment_method: str, 
+                     delivery_address: str, delivery_phone: str, 
+                     special_instructions: str = None) -> bool:
+    """
+    User commits to payment and provides delivery details
+    """
+    
+    try:
+        user_order = db.query(UserOrder).filter(UserOrder.id == user_order_id).first()
+        if not user_order:
+            return False
+        
+        # Check if commitment deadline has passed
+        if datetime.utcnow() > user_order.commitment_deadline:
+            return False
+        
+        # Update user order with commitment
+        user_order.payment_method = payment_method
+        user_order.delivery_address = delivery_address
+        user_order.delivery_phone = delivery_phone
+        user_order.special_instructions = special_instructions
+        user_order.is_committed = True
+        user_order.committed_at = datetime.utcnow()
+        
+        db.commit()
+        
+        # Check if all users have committed
+        check_all_commitments(db, user_order.clubbed_order_id)
+        
+        return True
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to commit to payment: {str(e)}")
+        return False
+
+def confirm_payment(db: Session, user_order_id: str, external_transaction_id: str = None,
+                   payment_gateway: str = None) -> bool:
+    """
+    Confirm payment for a user order
+    """
+    try:
+        user_order = db.query(UserOrder).filter(UserOrder.id == user_order_id).first()
+        if not user_order:
+            return False
+        
+        # Update payment status
+        user_order.payment_status = 'CONFIRMED'
+        user_order.payment_confirmed_at = datetime.utcnow()
+        
+        # Create payment transaction record
+        transaction = PaymentTransaction(
+            id=generate_uuid(),
+            user_order_id=user_order_id,
+            user_id=user_order.user_id,
+            transaction_type='PAYMENT',
+            amount=user_order.individual_total,
+            payment_method=user_order.payment_method,
+            external_transaction_id=external_transaction_id,
+            payment_gateway=payment_gateway,
+            status='SUCCESS',
+            processed_at=datetime.utcnow()
+        )
+        
+        db.add(transaction)
+        db.commit()
+        
+        # Check if all payments are confirmed
+        check_all_payments_confirmed(db, user_order.clubbed_order_id)
+        
+        return True
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to confirm payment: {str(e)}")
+        return False
+
+def check_all_commitments(db: Session, clubbed_order_id: str) -> bool:
+    """
+    Check if all users have committed to their payments
+    """
+    try:
+        user_orders = db.query(UserOrder).filter(
+            UserOrder.clubbed_order_id == clubbed_order_id
+        ).all()
+        
+        all_committed = all(order.is_committed for order in user_orders)
+        
+        if all_committed:
+            # Update clubbed order status
+            clubbed_order = db.query(ClubbedOrder).filter(
+                ClubbedOrder.id == clubbed_order_id
+            ).first()
+            
+            if clubbed_order and clubbed_order.status == OrderStatus.PAYMENT_PENDING:
+                # Extend deadline for payment confirmation
+                from datetime import timedelta
+                clubbed_order.payment_confirmation_deadline = datetime.utcnow() + timedelta(minutes=30)
+                db.commit()
+        
+        return all_committed
+        
+    except Exception as e:
+        logger.error(f"Failed to check commitments: {str(e)}")
+        return False
+
+def check_all_payments_confirmed(db: Session, clubbed_order_id: str) -> bool:
+    """
+    Check if all users have confirmed their payments
+    """
+    try:
+        user_orders = db.query(UserOrder).filter(
+            UserOrder.clubbed_order_id == clubbed_order_id
+        ).all()
+        
+        all_confirmed = all(order.payment_status == 'CONFIRMED' for order in user_orders)
+        
+        if all_confirmed:
+            # Update clubbed order
+            clubbed_order = db.query(ClubbedOrder).filter(
+                ClubbedOrder.id == clubbed_order_id
+            ).first()
+            
+            if clubbed_order:
+                clubbed_order.status = OrderStatus.PAYMENT_CONFIRMED
+                clubbed_order.all_payments_confirmed = True
+                clubbed_order.order_confirmed_at = datetime.utcnow()
+                
+                # Assign delivery driver (placeholder for now)
+                # assign_delivery_driver(db, clubbed_order_id)
+                
+                db.commit()
+        
+        return all_confirmed
+        
+    except Exception as e:
+        logger.error(f"Failed to check payment confirmations: {str(e)}")
+        return False
+
+def cancel_user_order(db: Session, user_order_id: str, cancelled_by_user_id: str, 
+                     reason: str = 'USER_WITHDREW') -> Optional[OrderCancellation]:
+    """
+    Cancel a user order and handle penalties/compensation
+    """
+    try:
+        user_order = db.query(UserOrder).filter(UserOrder.id == user_order_id).first()
+        if not user_order:
+            return None
+        
+        # Calculate cancellation fee (10% of order value, minimum ₹50, maximum ₹200)
+        cancellation_fee = max(50.0, min(200.0, float(user_order.individual_total) * 0.1))
+        
+        # Calculate compensation (60% of cancellation fee goes to other users)
+        compensation_amount = cancellation_fee * 0.6
+        company_penalty_share = cancellation_fee * 0.4
+        
+        # Create cancellation record
+        cancellation = OrderCancellation(
+            id=generate_uuid(),
+            user_order_id=user_order_id,
+            clubbed_order_id=user_order.clubbed_order_id,
+            cancelled_by_user_id=cancelled_by_user_id,
+            cancellation_reason=reason,
+            cancellation_fee=cancellation_fee,
+            compensation_amount=compensation_amount,
+            company_penalty_share=company_penalty_share
+        )
+        
+        db.add(cancellation)
+        
+        # Update user order status
+        user_order.payment_status = 'CANCELLED'
+        
+        # Cancel the entire clubbed order
+        cancel_entire_clubbed_order(db, user_order.clubbed_order_id, cancellation.id)
+        
+        db.commit()
+        return cancellation
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to cancel user order: {str(e)}")
+        return None
+
+def cancel_entire_clubbed_order(db: Session, clubbed_order_id: str, cancellation_id: str):
+    """
+    Cancel the entire clubbed order when one user withdraws
+    """
+    try:
+        # Get all user orders for this clubbed order
+        user_orders = db.query(UserOrder).filter(
+            UserOrder.clubbed_order_id == clubbed_order_id
+        ).all()
+        
+        # Cancel all other user orders
+        for user_order in user_orders:
+            if user_order.payment_status != 'CANCELLED':
+                user_order.payment_status = 'CANCELLED'
+        
+        # Update clubbed order status
+        clubbed_order = db.query(ClubbedOrder).filter(
+            ClubbedOrder.id == clubbed_order_id
+        ).first()
+        
+        if clubbed_order:
+            clubbed_order.status = OrderStatus.CANCELLED
+        
+        # Process compensation to other users
+        process_cancellation_compensation(db, clubbed_order_id, cancellation_id)
+        
+    except Exception as e:
+        logger.error(f"Failed to cancel clubbed order: {str(e)}")
+
+def process_cancellation_compensation(db: Session, clubbed_order_id: str, cancellation_id: str):
+    """
+    Process compensation payments to users affected by cancellation
+    """
+    try:
+        cancellation = db.query(OrderCancellation).filter(
+            OrderCancellation.id == cancellation_id
+        ).first()
+        
+        if not cancellation or cancellation.compensation_processed:
+            return
+        
+        # Get all other user orders (excluding the one that was cancelled)
+        other_user_orders = db.query(UserOrder).filter(
+            UserOrder.clubbed_order_id == clubbed_order_id,
+            UserOrder.id != cancellation.user_order_id
+        ).all()
+        
+        if other_user_orders:
+            # Divide compensation equally among other users
+            compensation_per_user = cancellation.compensation_amount / len(other_user_orders)
+            
+            for user_order in other_user_orders:
+                # Create compensation transaction
+                compensation_transaction = PaymentTransaction(
+                    id=generate_uuid(),
+                    user_order_id=user_order.id,
+                    user_id=user_order.user_id,
+                    transaction_type='COMPENSATION',
+                    amount=compensation_per_user,
+                    payment_method='WALLET',  # Credit to wallet
+                    status='SUCCESS',
+                    processed_at=datetime.utcnow()
+                )
+                
+                db.add(compensation_transaction)
+        
+        # Create penalty transaction for cancelling user
+        penalty_transaction = PaymentTransaction(
+            id=generate_uuid(),
+            user_order_id=cancellation.user_order_id,
+            user_id=cancellation.cancelled_by_user_id,
+            transaction_type='PENALTY',
+            amount=cancellation.cancellation_fee,
+            payment_method='ONLINE',  # Charge to user
+            status='PENDING',  # Will be processed by payment system
+            processed_at=datetime.utcnow()
+        )
+        
+        db.add(penalty_transaction)
+        
+        # Mark compensation as processed
+        cancellation.compensation_processed = True
+        cancellation.penalty_processed = True
+        
+        db.commit()
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to process compensation: {str(e)}")
+
+def get_split_payment_summary(db: Session, clubbed_order_id: str, user_id: str) -> Optional[dict]:
+    """
+    Get payment summary for a user in a clubbed order
+    """
+    try:
+        # Get user's order
+        user_order = db.query(UserOrder).filter(
+            UserOrder.clubbed_order_id == clubbed_order_id,
+            UserOrder.user_id == user_id
+        ).first()
+        
+        if not user_order:
+            return None
+        
+        # Get clubbed order
+        clubbed_order = db.query(ClubbedOrder).filter(
+            ClubbedOrder.id == clubbed_order_id
+        ).first()
+        
+        # Get all user orders for this clubbed order
+        all_user_orders = db.query(UserOrder).filter(
+            UserOrder.clubbed_order_id == clubbed_order_id
+        ).all()
+        
+        # Calculate totals
+        total_order_value = float(clubbed_order.combined_value)
+        your_portion = float(user_order.individual_total)
+        other_users_portion = total_order_value - your_portion
+        
+        # Calculate delivery fee (shared equally)
+        delivery_fee = 40.0  # Base delivery fee
+        delivery_fee_per_user = delivery_fee / len(all_user_orders)
+        
+        # Calculate discount (5% for clubbed orders)
+        discount_applied = your_portion * 0.05
+        
+        # Final amount to pay
+        final_amount = your_portion + delivery_fee_per_user - discount_applied
+        
+        # Check commitment status
+        confirmed_payments = sum(1 for order in all_user_orders if order.payment_status == 'CONFIRMED')
+        pending_payments = len(all_user_orders) - confirmed_payments
+        all_users_committed = all(order.is_committed for order in all_user_orders)
+        
+        return {
+            'clubbed_order_id': clubbed_order_id,
+            'total_order_value': total_order_value,
+            'your_portion': your_portion,
+            'other_users_portion': other_users_portion,
+            'delivery_fee': delivery_fee_per_user,
+            'discount_applied': discount_applied,
+            'final_amount_to_pay': final_amount,
+            'payment_deadline': user_order.commitment_deadline.isoformat() + 'Z' if user_order.commitment_deadline else None,
+            'all_users_committed': all_users_committed,
+            'confirmed_payments': confirmed_payments,
+            'pending_payments': pending_payments
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get payment summary: {str(e)}")
+        return None

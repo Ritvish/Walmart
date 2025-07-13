@@ -38,6 +38,13 @@ def join_queue(
     # Schedule background task to handle matching
     background_tasks.add_task(process_buddy_matching, buddy_entry.id)
     
+    # Also try immediate matching for faster response (testing)
+    try:
+        print(f"DEBUG: Attempting immediate matching for {buddy_entry.id}")
+        process_buddy_matching(buddy_entry.id)
+    except Exception as e:
+        print(f"DEBUG: Immediate matching failed: {e}")
+    
     return buddy_entry
 
 @router.get("/status/{buddy_queue_id}")
@@ -182,6 +189,7 @@ def get_detailed_club_status(
 
 def process_buddy_matching(buddy_queue_id: str):
     """Background task to process buddy matching"""
+    print(f"DEBUG: Starting buddy matching for {buddy_queue_id}")
     db = SessionLocal()
     try:
         # Timeout expired buddies first
@@ -189,18 +197,29 @@ def process_buddy_matching(buddy_queue_id: str):
         
         # Find compatible buddies for the new user
         compatible_buddies = find_compatible_buddies(db, buddy_queue_id)
+        print(f"DEBUG: Found {len(compatible_buddies)} compatible buddies")
         
         if len(compatible_buddies) > 1:
+            print(f"DEBUG: Creating clubbed order with {len(compatible_buddies)} buddies")
             # Create clubbed order
             clubbed_order = create_clubbed_order(db, compatible_buddies)
             
             if clubbed_order:
+                print(f"DEBUG: Created clubbed order {clubbed_order.id}")
                 # Try to assign driver, but don't fail if it doesn't work
                 try:
                     assign_driver_to_order(db, clubbed_order.id)
                 except Exception as e:
                     print(f"Warning: Could not assign driver to order {clubbed_order.id}: {e}")
                     # Continue without driver assignment for now
+            else:
+                print("DEBUG: Failed to create clubbed order")
+        else:
+            print(f"DEBUG: Not enough buddies for matching (found {len(compatible_buddies)})")
+    except Exception as e:
+        print(f"ERROR: Exception in buddy matching: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         db.close()
 

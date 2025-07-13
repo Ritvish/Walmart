@@ -197,3 +197,94 @@ class ClubReadinessResponse(BaseModel):
 class LocationUpdate(BaseModel):
     lat: Decimal
     lng: Decimal
+
+# Split Payment and Commitment schemas
+
+class UserOrderCreate(BaseModel):
+    clubbed_order_id: str
+    payment_method: str  # 'ONLINE' or 'COD'
+    delivery_address: str
+    delivery_phone: str
+    special_instructions: Optional[str] = None
+
+class UserOrderResponse(BaseModel):
+    id: str
+    clubbed_order_id: str
+    user_id: str
+    individual_total: float
+    payment_method: str
+    payment_status: str
+    commitment_deadline: datetime
+    is_committed: bool
+    delivery_address: str
+    delivery_phone: str
+    special_instructions: Optional[str]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class PaymentCommitRequest(BaseModel):
+    user_order_id: str
+    payment_method: str
+    delivery_address: str
+    delivery_phone: str
+    special_instructions: Optional[str] = None
+
+class PaymentConfirmationRequest(BaseModel):
+    user_order_id: str
+    external_transaction_id: Optional[str] = None  # For online payments
+    payment_gateway: Optional[str] = None
+
+class OrderCancellationRequest(BaseModel):
+    user_order_id: str
+    cancellation_reason: str
+
+class OrderCancellationResponse(BaseModel):
+    id: str
+    user_order_id: str
+    clubbed_order_id: str
+    cancelled_by_user_id: str
+    cancellation_reason: str
+    cancellation_fee: float
+    compensation_amount: float
+    cancelled_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class PaymentTransactionResponse(BaseModel):
+    id: str
+    user_order_id: str
+    user_id: str
+    transaction_type: str
+    amount: float
+    payment_method: str
+    status: str
+    external_transaction_id: Optional[str]
+    payment_gateway: Optional[str]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class SplitPaymentSummary(BaseModel):
+    clubbed_order_id: str
+    total_order_value: float
+    your_portion: float
+    other_users_portion: float
+    delivery_fee: float
+    discount_applied: float
+    final_amount_to_pay: float
+    payment_deadline: datetime
+    all_users_committed: bool
+    confirmed_payments: int
+    pending_payments: int
+
+class OrderCommitmentStatus(BaseModel):
+    clubbed_order_id: str
+    commitment_deadline: datetime
+    committed_users: List[str]
+    pending_users: List[str]
+    all_committed: bool
+    order_confirmed: bool

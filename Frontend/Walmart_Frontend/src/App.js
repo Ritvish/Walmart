@@ -14,6 +14,7 @@ import CheckoutPage from './pages/CheckoutPage';
 import OrderSuccessPage from './pages/OrderSuccessPage';
 import OrderTrackingPage from './pages/OrderTrackingPage';
 import ClubbedCartPage from './pages/ClubbedCartPage';
+import SplitPaymentPage from './pages/SplitPaymentPage';
 
 // Protected Route component
 const ProtectedRoute = ({ children }) => {
@@ -131,6 +132,14 @@ const App = () => {
                   element={
                     <ProtectedRoute>
                       <OrderTrackingPage />
+                    </ProtectedRoute>
+                  } 
+                />
+                <Route 
+                  path="/split-payment/:clubbedOrderId" 
+                  element={
+                    <ProtectedRoute>
+                      <SplitPaymentPage />
                     </ProtectedRoute>
                   } 
                 />
