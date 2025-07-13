@@ -104,12 +104,19 @@ class ClubbedCartItem(BaseModel):
     price: float  # Changed from Decimal to float for frontend compatibility
     added_by_user: str
 
+class AnonymizedUserCart(BaseModel):
+    user_id: str  # Anonymous identifier like "User 1", "User 2", etc.
+    cart_total: float
+    item_count: int
+    is_current_user: bool
+
 class ClubbedCartResponse(BaseModel):
     clubbed_order_id: str
     status: OrderStatus
     total_amount: float  # Changed from Decimal to float for frontend compatibility
-    users: List[str]
-    items: List[ClubbedCartItem]
+    users: List[AnonymizedUserCart]  # Changed from List[str] to anonymized data
+    items: List[ClubbedCartItem]  # Only current user's items
+    other_users_total: float  # Total amount from other users
 
     class Config:
         from_attributes = True

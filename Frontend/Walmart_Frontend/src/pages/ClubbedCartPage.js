@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { clubService } from '../services/clubService';
 import { productService } from '../services/productService';
+import PrivacyNotice from '../components/PrivacyNotice';
 import toast from 'react-hot-toast';
 
 const ClubbedCartPage = () => {
@@ -35,15 +36,16 @@ const ClubbedCartPage = () => {
             clubbed_order_id: 'test-clubbed-order-id',
             status: 'ACTIVE',
             total_amount: 1700.00,
-            users: ['You', 'Buddy User'],
+            users: [
+              { user_id: 'You', cart_total: 455.00, item_count: 3, is_current_user: true },
+              { user_id: 'User 2', cart_total: 1245.00, item_count: 3, is_current_user: false }
+            ],
             items: [
               { product_name: 'Organic Bananas', quantity: 2, price: 120.00, added_by_user: 'You' },
               { product_name: 'Almond Milk', quantity: 1, price: 250.00, added_by_user: 'You' },
-              { product_name: 'Whole Wheat Bread', quantity: 1, price: 85.00, added_by_user: 'You' },
-              { product_name: 'Avocado (Pack of 4)', quantity: 1, price: 480.00, added_by_user: 'Buddy User' },
-              { product_name: 'Greek Yogurt', quantity: 2, price: 340.00, added_by_user: 'Buddy User' },
-              { product_name: 'Quinoa', quantity: 1, price: 425.00, added_by_user: 'Buddy User' }
-            ]
+              { product_name: 'Whole Wheat Bread', quantity: 1, price: 85.00, added_by_user: 'You' }
+            ],
+            other_users_total: 1245.00
           };
           setClubbedCart(testData);
           setLoading(false);
@@ -148,20 +150,27 @@ const ClubbedCartPage = () => {
     );
   }
 
-  const { users, items, total_amount, status } = clubbedCart;
+  const { users, items, total_amount, status, other_users_total } = clubbedCart;
   const currentUser = JSON.parse(localStorage.getItem('user'));
 
   // Ensure total_amount is a number before using toFixed
   const numericTotalAmount = parseFloat(total_amount) || 0.0;
+  const numericOtherUsersTotal = parseFloat(other_users_total) || 0.0;
+  
+  // Calculate current user's cart total
+  const currentUserData = users.find(user => user.is_current_user);
+  const currentUserTotal = currentUserData ? currentUserData.cart_total : 0.0;
 
   return (
     <div className="container mt-4">
       <h1>🎉 Clubbed Cart</h1>
       
+      <PrivacyNotice type="clubbed" />
+      
       {/* Status Banner */}
       <div className="alert alert-success mb-4">
-        <h4>Order Combined Successfully!</h4>
-        <p>Matched with {users.length - 1} other shopper(s)</p>
+        <h4>🎉 Order Combined Successfully!</h4>
+        <p>Matched with {users.filter(u => !u.is_current_user).length} other shopper(s)</p>
         {discountAmount > 0 && <p>💰 Discount Applied: ₹{discountAmount.toFixed(2)}</p>}
       </div>
       
@@ -174,37 +183,71 @@ const ClubbedCartPage = () => {
               <strong>Total Shoppers:</strong> {users.length}
             </div>
             <div className="col-md-3">
-              <strong>Total Items:</strong> {items.length}
+              <strong>Your Items:</strong> {items.length}
             </div>
             <div className="col-md-3">
-              <strong>Total Amount:</strong> ₹{numericTotalAmount.toFixed(2)}
+              <strong>Your Cart Total:</strong> ₹{currentUserTotal.toFixed(2)}
             </div>
             <div className="col-md-3">
               <strong>Status:</strong> <span className="badge bg-success">{status}</span>
             </div>
           </div>
+          <div className="row mt-2">
+            <div className="col-md-6">
+              <strong>Other Users' Total:</strong> ₹{numericOtherUsersTotal.toFixed(2)}
+            </div>
+            <div className="col-md-6">
+              <strong>Combined Total:</strong> ₹{numericTotalAmount.toFixed(2)}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Combined Items List */}
+      {/* Users Summary */}
       <div className="card mb-4">
         <div className="card-header">
-          <h5>All Items ({items.length} items)</h5>
+          <h5>👥 Users in this Order</h5>
         </div>
         <div className="card-body">
-          {items.map((item, index) => (
+          {users.map((user, index) => (
             <div key={index} className="d-flex justify-content-between align-items-center border-bottom py-2">
               <div>
-                <strong>{item.product_name}</strong>
-                <br />
-                <small className="text-muted">Added by: {item.added_by_user}</small>
+                <strong>{user.user_id}</strong>
+                {user.is_current_user && <span className="badge bg-primary ms-2">You</span>}
               </div>
               <div className="text-end">
-                <span className="badge bg-primary me-2">Qty: {item.quantity}</span>
-                <span className="fw-bold">₹{item.price.toFixed(2)}</span>
+                <span className="badge bg-secondary me-2">{user.item_count} items</span>
+                <span className="fw-bold">₹{user.cart_total.toFixed(2)}</span>
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Your Items List */}
+      <div className="card mb-4">
+        <div className="card-header">
+          <h5>🛒 Your Items ({items.length} items)</h5>
+          <small className="text-muted">For privacy, other users' items are not displayed</small>
+        </div>
+        <div className="card-body">
+          {items.length === 0 ? (
+            <p className="text-muted">You haven't added any items yet.</p>
+          ) : (
+            items.map((item, index) => (
+              <div key={index} className="d-flex justify-content-between align-items-center border-bottom py-2">
+                <div>
+                  <strong>{item.product_name}</strong>
+                  <br />
+                  <small className="text-muted">Added by: {item.added_by_user}</small>
+                </div>
+                <div className="text-end">
+                  <span className="badge bg-primary me-2">Qty: {item.quantity}</span>
+                  <span className="fw-bold">₹{item.price.toFixed(2)}</span>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
 

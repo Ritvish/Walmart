@@ -21,6 +21,13 @@
 - **Intuitive Interface**: Clean, responsive React frontend
 - **Progress Tracking**: Visual feedback on nearby users and estimated match time
 
+### 🔒 Privacy & Security
+- **Anonymized User Data**: Other users are identified only as "User 1", "User 2", etc.
+- **Hidden Shopping Details**: Individual items from other users' carts are never displayed
+- **Aggregated Totals**: Only combined cart values and item counts are shared
+- **Secure Data Handling**: Personal information and shopping patterns remain private
+- **Privacy-First Design**: Users can collaborate without compromising individual privacy
+
 ## 🏗️ Architecture
 
 ### Backend (FastAPI + Python)

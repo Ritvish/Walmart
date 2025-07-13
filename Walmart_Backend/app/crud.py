@@ -428,6 +428,7 @@ def create_clubbed_order(db: Session, buddies: List[BuddyQueue]) -> ClubbedOrder
 def get_clubbed_order_details(db: Session, clubbed_order_id: str, requesting_user_id: str):
     """
     Get details of a clubbed order, ensuring the requesting user is part of it.
+    Returns anonymized data to protect privacy.
     """
     # First, check if the user is part of this clubbed order
     user_in_club = db.query(ClubbedOrderUser).filter(
@@ -436,7 +437,7 @@ def get_clubbed_order_details(db: Session, clubbed_order_id: str, requesting_use
     ).first()
 
     if not user_in_club:
-        return None, [], []
+        return None, [], [], 0.0
 
     clubbed_order = db.query(ClubbedOrder).filter(ClubbedOrder.id == clubbed_order_id).first()
     
@@ -445,28 +446,50 @@ def get_clubbed_order_details(db: Session, clubbed_order_id: str, requesting_use
     user_ids = [cua.user_id for cua in club_users_assoc]
     users = db.query(User).filter(User.id.in_(user_ids)).all()
 
-    # Get all items from all carts in this clubbed order
-    cart_ids = [cua.cart_id for cua in club_users_assoc]
-    all_items_query = db.query(CartItem, User.name.label("added_by_user")).join(
+    # Get current user's items only (for privacy)
+    current_user_cart_id = user_in_club.cart_id
+    current_user_items_query = db.query(CartItem, User.name.label("added_by_user")).join(
         Cart, CartItem.cart_id == Cart.id
     ).join(
         User, Cart.user_id == User.id
-    ).filter(CartItem.cart_id.in_(cart_ids))
+    ).filter(CartItem.cart_id == current_user_cart_id)
     
-    all_items = all_items_query.all()
+    current_user_items = current_user_items_query.all()
 
-    # Format items for the response
+    # Format current user's items for the response
     formatted_items = [
         {
             "product_name": item.product.name,
             "quantity": item.quantity,
             "price": float(item.product.price),  # Convert Decimal to float
-            "added_by_user": added_by_user
+            "added_by_user": "You"
         }
-        for item, added_by_user in all_items
+        for item, added_by_user in current_user_items
     ]
 
-    return clubbed_order, users, formatted_items
+    # Calculate anonymized user data
+    anonymized_users = []
+    other_users_total = 0.0
+    
+    for i, cua in enumerate(club_users_assoc):
+        # Get cart total for this user
+        cart_items = db.query(CartItem).filter(CartItem.cart_id == cua.cart_id).all()
+        cart_total = sum(float(item.product.price) * item.quantity for item in cart_items)
+        item_count = len(cart_items)
+        
+        is_current_user = cua.user_id == requesting_user_id
+        
+        anonymized_users.append({
+            "user_id": "You" if is_current_user else f"User {i + 1}",
+            "cart_total": cart_total,
+            "item_count": item_count,
+            "is_current_user": is_current_user
+        })
+        
+        if not is_current_user:
+            other_users_total += cart_total
+
+    return clubbed_order, anonymized_users, formatted_items, other_users_total
 
 
 def add_item_to_clubbed_cart(db: Session, clubbed_order_id: str, user_id: str, item: CartItemCreate):
